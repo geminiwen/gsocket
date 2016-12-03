@@ -97,10 +97,9 @@ public class WebSocket {
                 mWebSocket.close(1000, "");
             } catch (IllegalStateException e) {
                 // websocket already closed
+            } finally {
+                mWebSocket.cancel();
             }
-        }
-        if (mWebSocket != null) {
-            mWebSocket.cancel();
         }
     }
 

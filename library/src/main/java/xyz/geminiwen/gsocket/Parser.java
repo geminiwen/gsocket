@@ -92,10 +92,10 @@ public class Parser {
         }
     }
 
-    public static Packet<byte[]> decodePacket(byte[] data) {
-        int type = data[0];
-        byte[] intArray = new byte[data.length - 1];
-        System.arraycopy(data, 1, intArray, 0, intArray.length);
-        return new Packet<>(sPacketsList.get(type), intArray);
+    public static Packet<byte[]> decodePacket(byte[] source) {
+        int type = source[0];
+        byte[] buffer = new byte[source.length - 1];
+        arraycopy(source, 1, buffer, 0, buffer.length);
+        return new Packet<>(sPacketsList.get(type), buffer);
     }
 }
