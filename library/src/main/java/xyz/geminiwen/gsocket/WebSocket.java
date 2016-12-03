@@ -15,6 +15,7 @@ import okio.ByteString;
 
 public class WebSocket {
     public static final String NAME = WebSocket.class.getSimpleName();
+    public static final String ENGINE_IO_PROTOCOL = "3";
 
     protected enum ReadyState {
         OPENING, OPEN, CLOSED, PAUSED;
@@ -39,7 +40,7 @@ public class WebSocket {
         urlBuilder.host(opts.host)
                   .port(opts.port)
                 .scheme(opts.scheme)
-                .addQueryParameter("EIO", "3")
+                .addQueryParameter("EIO", ENGINE_IO_PROTOCOL)
                 .addPathSegments("engine.io/")
                 .addQueryParameter("transport", "websocket");
         mHttpUrl = urlBuilder.build();
@@ -126,7 +127,7 @@ public class WebSocket {
     }
 
     public void onError(String message, Throwable t) {
-
+        t.printStackTrace();
     }
 
 
@@ -162,7 +163,6 @@ public class WebSocket {
 
         @Override
         public void onFailure(okhttp3.WebSocket webSocket, final Throwable t, Response response) {
-            t.printStackTrace();
             mProxy.onError("WebSocket Error", t);
         }
     };
