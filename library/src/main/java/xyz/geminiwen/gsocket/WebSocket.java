@@ -1,5 +1,11 @@
 package xyz.geminiwen.gsocket;
 
+import org.json.JSONException;
+
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.HttpUrl;
@@ -27,12 +33,19 @@ public class WebSocket {
     }
 
 
-    ReadyState mReadyState;
+    private ReadyState mReadyState;
+    private ScheduledExecutorService mHeartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
+    private Future mPingIntervalTimer;
 
     private okhttp3.WebSocket mWebSocket;
     private boolean mWrittable;
     private Options mOptions;
     private HttpUrl mHttpUrl;
+
+    //TODO deal with session id
+    private String mSessionId;
+    private long mPingInterval;
+    private long mPingTimeout;
 
     public WebSocket(Options opts) {
         mOptions = opts;
@@ -70,12 +83,21 @@ public class WebSocket {
         mWebSocket = client.newWebSocket(request, mWebSocketListener);
     }
 
-    protected void write(Packet[] packets) throws UTF8Exception {
+    public void send(Packet... packets) {
+        if (this.mReadyState == ReadyState.OPEN) {
+            try {
+                this.write(packets);
+            } catch (UTF8Exception err) {
+                throw new RuntimeException(err);
+            }
+        } else {
+            throw new RuntimeException("Transport not open");
+        }
+    }
+
+    protected void write(Packet... packets) throws UTF8Exception {
         final WebSocket self = this;
         this.mWrittable = false;
-
-
-        final int[] total = new int[]{packets.length};
         for (Packet packet : packets) {
             if (this.mReadyState != ReadyState.OPENING && this.mReadyState != ReadyState.OPEN) {
                 // Ensure we don't try to send anymore packets if the socket ends up being closed due to an exception
@@ -119,10 +141,52 @@ public class WebSocket {
     }
 
     public void onPacket(Packet packet) {
+        if (this.mReadyState == ReadyState.OPENING || this.mReadyState == ReadyState.OPEN) {
+            if (Packet.OPEN.equals(packet.type)) {
+                try {
+                    this.onHandshake(new HandshakeData((String)packet.data));
+                } catch (JSONException e) {
+//                    this.emit(EVENT_ERROR, new EngineIOException(e));
+                }
+            } else if (Packet.PONG.equals(packet.type)) {
+//                this.setPing();
+//                this.emit(EVENT_PONG);
+            } else if (Packet.ERROR.equals(packet.type)) {
+//                EngineIOException err = new EngineIOException("server error");
+//                err.code = packet.data;
+//                this.onError(err);
+            } else if (Packet.MESSAGE.equals(packet.type)) {
+//                this.emit(EVENT_DATA, packet.data);
+//                this.emit(EVENT_MESSAGE, packet.data);
+            }
+        } else {
+//            logger.fine(String.format("packet received with socket readyState '%s'", this.readyState));
+        }
     }
 
-    public void onClose() {
+    public void onHandshake(HandshakeData data) {
+        this.mSessionId = data.sid;
+        this.mPingInterval = data.pingInterval;
+        this.mPingTimeout = data.pingTimeout;
+    }
 
+    private void intervalPing() {
+        if (mPingIntervalTimer != null) {
+            mPingIntervalTimer.cancel(false);
+            mPingIntervalTimer = null;
+        }
+
+        mPingIntervalTimer = mHeartbeatExecutor.schedule(new Runnable() {
+            @Override
+            public void run() {
+                send(new Packet(Packet.PING));
+            }
+        }, this.mPingInterval, TimeUnit.MILLISECONDS);
+    }
+
+
+    public void onClose() {
+        this.mReadyState = ReadyState.CLOSED;
     }
 
     public void onError(String message, Throwable t) {
