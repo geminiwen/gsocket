@@ -2,7 +2,8 @@ package xyz.geminiwen.gsocket;
 
 import org.json.JSONException;
 
-import java.util.concurrent.Executor;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
@@ -14,6 +15,10 @@ import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.WebSocketListener;
 import okio.ByteString;
+import rx.Observable;
+import rx.Subscriber;
+import rx.functions.Action0;
+import rx.subscriptions.Subscriptions;
 
 /**
  * Created by geminiwen on 2016/12/3.
@@ -21,7 +26,7 @@ import okio.ByteString;
 
 public class WebSocket {
     public static final String NAME = WebSocket.class.getSimpleName();
-    public static final String ENGINE_IO_PROTOCOL = "3";
+    private static final String ENGINE_IO_PROTOCOL = "3";
 
     protected enum ReadyState {
         OPENING, OPEN, CLOSED, PAUSED;
@@ -42,6 +47,8 @@ public class WebSocket {
     private Options mOptions;
     private HttpUrl mHttpUrl;
 
+    private List<WebSocketListener> mSocketListeners;
+
     //TODO deal with session id
     private String mSessionId;
     private long mPingInterval;
@@ -51,15 +58,19 @@ public class WebSocket {
         mOptions = opts;
         HttpUrl.Builder urlBuilder = new HttpUrl.Builder();
         urlBuilder.host(opts.host)
-                  .port(opts.port)
+                .port(opts.port)
                 .scheme(opts.scheme)
+                .addPathSegments(opts.path)
                 .addQueryParameter("EIO", ENGINE_IO_PROTOCOL)
-                .addPathSegments("engine.io/")
                 .addQueryParameter("transport", "websocket");
         mHttpUrl = urlBuilder.build();
+        mSocketListeners = new ArrayList<>();
     }
 
-    public void open() {
+    public void addSocketListener(WebSocketListener l) {
+        this.mSocketListeners.add(l);
+    }
+    private  void openIfNeed() {
         if (this.mReadyState == ReadyState.CLOSED || this.mReadyState == null) {
             this.mReadyState = ReadyState.OPENING;
             this.doOpen();
@@ -96,7 +107,6 @@ public class WebSocket {
     }
 
     protected void write(Packet... packets) throws UTF8Exception {
-        final WebSocket self = this;
         this.mWrittable = false;
         for (Packet packet : packets) {
             if (this.mReadyState != ReadyState.OPENING && this.mReadyState != ReadyState.OPEN) {
@@ -104,10 +114,10 @@ public class WebSocket {
                 break;
             }
             if (packet.data instanceof String) {
-                String data = Parser.encodePacketString((Packet<String>)packet);
+                String data = Parser.encodePacketString((Packet<String>) packet);
                 mWebSocket.send(data);
             } else {
-                byte[] data = Parser.encodePacketBinary((Packet<byte[]>)packet);
+                byte[] data = Parser.encodePacketBinary((Packet<byte[]>) packet);
                 mWebSocket.send(ByteString.of(data));
             }
         }
@@ -130,47 +140,53 @@ public class WebSocket {
         this.mWrittable = true;
     }
 
-    public void onData(String text) {
-        Packet<String> packet = Parser.decodePacket(text);
-        this.onPacket(packet);
-    }
-
-    public void onData(byte[] data) {
-        Packet<byte[]> packet = Parser.decodePacket(data);
-        this.onPacket(packet);
-    }
-
-    public void onPacket(Packet packet) {
+    private void checkReadyState() throws EngineIOException {
         if (this.mReadyState == ReadyState.OPENING || this.mReadyState == ReadyState.OPEN) {
-            if (Packet.OPEN.equals(packet.type)) {
-                try {
-                    this.onHandshake(new HandshakeData((String)packet.data));
-                } catch (JSONException e) {
-//                    this.emit(EVENT_ERROR, new EngineIOException(e));
-                }
-            } else if (Packet.PONG.equals(packet.type)) {
-//                this.setPing();
-//                this.emit(EVENT_PONG);
-            } else if (Packet.ERROR.equals(packet.type)) {
-//                EngineIOException err = new EngineIOException("server error");
-//                err.code = packet.data;
-//                this.onError(err);
-            } else if (Packet.MESSAGE.equals(packet.type)) {
-//                this.emit(EVENT_DATA, packet.data);
-//                this.emit(EVENT_MESSAGE, packet.data);
-            }
+            return;
         } else {
-//            logger.fine(String.format("packet received with socket readyState '%s'", this.readyState));
+            throw new EngineIOException("unknown packet for illegal state");
         }
     }
 
-    public void onHandshake(HandshakeData data) {
+    public void handlePacket(Packet packet, Subscriber<? super Packet> subscriber) {
+        try {
+            checkReadyState();
+            if (Packet.ERROR.equals(packet.type)) {
+                EngineIOException err = new EngineIOException("server error");
+                subscriber.onError(err);
+            } else if (Packet.MESSAGE.equals(packet.type)) {
+                subscriber.onNext(packet);
+            }
+        } catch (EngineIOException e) {
+            subscriber.onError(e);
+        }
+    }
+
+
+    private void handlePacketInternal(Packet packet) {
+        try {
+            checkReadyState();
+            if (Packet.OPEN.equals(packet.type)) {
+                try {
+                    this.onHandshake(new HandshakeData((String) packet.data));
+                } catch (JSONException e) {
+                }
+            }
+        } catch (EngineIOException e) {
+
+        }
+    }
+
+
+    void onHandshake(HandshakeData data) {
         this.mSessionId = data.sid;
         this.mPingInterval = data.pingInterval;
         this.mPingTimeout = data.pingTimeout;
+
+        setupIntervalPing();
     }
 
-    private void intervalPing() {
+    void setupIntervalPing() {
         if (mPingIntervalTimer != null) {
             mPingIntervalTimer.cancel(false);
             mPingIntervalTimer = null;
@@ -185,14 +201,49 @@ public class WebSocket {
     }
 
 
-    public void onClose() {
+    void onClose() {
         this.mReadyState = ReadyState.CLOSED;
     }
 
-    public void onError(String message, Throwable t) {
+    void onError(String message, Throwable t) {
         t.printStackTrace();
     }
 
+    public Observable<Packet> onPacket() {
+        return Observable.create(new Observable.OnSubscribe<Packet>() {
+            @Override
+            public void call(final Subscriber<? super Packet> subscriber) {
+                openIfNeed();
+
+                final WebSocketListener listener = new WebSocketListener() {
+                    @Override
+                    public void onMessage(okhttp3.WebSocket webSocket, String text) {
+                        super.onMessage(webSocket, text);
+                        Packet<String> packet = Parser.decodePacket(text);
+                        //test packet;
+                        handlePacket(packet, subscriber);
+                    }
+
+                    @Override
+                    public void onMessage(okhttp3.WebSocket webSocket, ByteString bytes) {
+                        super.onMessage(webSocket, bytes);
+                        Packet<byte[]> packet = Parser.decodePacket(bytes.toByteArray());
+                        handlePacket(packet, subscriber);
+                    }
+                };
+
+                mSocketListeners.add(listener);
+
+                subscriber.add(Subscriptions.create(new Action0() {
+                    @Override
+                    public void call() {
+                        mSocketListeners.remove(listener);
+                    }
+                }));
+
+            }
+        });
+    }
 
     private WebSocketListener mWebSocketListener = new WebSocketListener() {
         WebSocket mProxy;
@@ -204,35 +255,54 @@ public class WebSocket {
         @Override
         public void onOpen(okhttp3.WebSocket webSocket, Response response) {
             super.onOpen(webSocket, response);
+            for (WebSocketListener l : mSocketListeners) {
+                l.onOpen(webSocket, response);
+            }
             mProxy.onOpen();
         }
 
         @Override
         public void onMessage(okhttp3.WebSocket webSocket, String text) {
             super.onMessage(webSocket, text);
-            mProxy.onData(text);
+            Packet<String> packet = Parser.decodePacket(text);
+            mProxy.handlePacketInternal(packet);
+
+            for (WebSocketListener l : mSocketListeners) {
+                l.onMessage(webSocket, text);
+            }
         }
 
         @Override
         public void onMessage(okhttp3.WebSocket webSocket, ByteString bytes) {
             super.onMessage(webSocket, bytes);
-            mProxy.onData(bytes.toByteArray());
+            Packet<byte[]> packet = Parser.decodePacket(bytes.toByteArray());
+            mProxy.handlePacketInternal(packet);
+
+            for (WebSocketListener l : mSocketListeners) {
+                l.onMessage(webSocket, bytes);
+            }
         }
 
         @Override
         public void onClosed(okhttp3.WebSocket webSocket, int code, String reason) {
+            super.onClosed(webSocket, code, reason);
+            for (WebSocketListener l : mSocketListeners) {
+                l.onClosed(webSocket, code, reason);
+            }
             mProxy.onClose();
         }
 
         @Override
-        public void onFailure(okhttp3.WebSocket webSocket, final Throwable t, Response response) {
+        public void onFailure(okhttp3.WebSocket webSocket, Throwable t, Response response) {
+            super.onFailure(webSocket, t, response);
+            for (WebSocketListener l : mSocketListeners) {
+                l.onFailure(webSocket, t, response);
+            }
+
+            for (WebSocketListener l : mSocketListeners) {
+                l.onOpen(webSocket, response);
+            }
             mProxy.onError("WebSocket Error", t);
         }
     };
-
-
-
-
-
-
 }

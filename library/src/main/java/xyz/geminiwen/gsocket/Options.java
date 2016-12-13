@@ -10,5 +10,6 @@ public class Options {
     public OkHttpClient httpClient;
     public String host;
     public String scheme;
+    public String path;
     public int port;
 }
