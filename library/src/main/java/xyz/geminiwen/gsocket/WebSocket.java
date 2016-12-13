@@ -154,16 +154,18 @@ public class WebSocket {
             if (Packet.ERROR.equals(packet.type)) {
                 EngineIOException err = new EngineIOException("server error");
                 subscriber.onError(err);
+                subscriber.onCompleted();
             } else if (Packet.MESSAGE.equals(packet.type)) {
                 subscriber.onNext(packet);
             }
         } catch (EngineIOException e) {
             subscriber.onError(e);
+            subscriber.onCompleted();
         }
     }
 
 
-    private void handlePacketInternal(Packet packet) {
+    private void onPacketInternal(Packet packet) {
         try {
             checkReadyState();
             if (Packet.OPEN.equals(packet.type)) {
@@ -220,7 +222,6 @@ public class WebSocket {
                     public void onMessage(okhttp3.WebSocket webSocket, String text) {
                         super.onMessage(webSocket, text);
                         Packet<String> packet = Parser.decodePacket(text);
-                        //test packet;
                         handlePacket(packet, subscriber);
                     }
 
@@ -265,7 +266,7 @@ public class WebSocket {
         public void onMessage(okhttp3.WebSocket webSocket, String text) {
             super.onMessage(webSocket, text);
             Packet<String> packet = Parser.decodePacket(text);
-            mProxy.handlePacketInternal(packet);
+            mProxy.onPacketInternal(packet);
 
             for (WebSocketListener l : mSocketListeners) {
                 l.onMessage(webSocket, text);
@@ -276,7 +277,7 @@ public class WebSocket {
         public void onMessage(okhttp3.WebSocket webSocket, ByteString bytes) {
             super.onMessage(webSocket, bytes);
             Packet<byte[]> packet = Parser.decodePacket(bytes.toByteArray());
-            mProxy.handlePacketInternal(packet);
+            mProxy.onPacketInternal(packet);
 
             for (WebSocketListener l : mSocketListeners) {
                 l.onMessage(webSocket, bytes);
